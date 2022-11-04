@@ -7,6 +7,7 @@ const os = require("os");
 const auth = require('../middleware/auth');
 
 const Users = require("../models/users");
+const Profiles = require("../models/profiles");
 
 // for more information: http://stackoverflow.com/a/8809472
 const generateUUID = () => {
@@ -49,19 +50,26 @@ function setEnvValue(key, value) {
 
 router.post("/register", async (req, res) => {
     try {
-        const { email, password } = req.body;
+        const { user, profile } = req.body;
+        const { email, password } = user;
+        const { fullName, username } = profile;
 
-        const existed = await Users.findOne({ email });
-        if (existed) {
+        const existedUser = await Users.findOne({ email });
+        if (existedUser) {
             return res.status(409).send("Email is used by another account. Try another email.");
         }
 
         var hashPassword = await bcrypt.hash(password, 10);
 
-        const user = await Users.create({
+        const account = await Users.create({
             email: email.toLowerCase(),
             hash_password: hashPassword,
             created: Date.now().toString()
+        });
+
+        const userProfile = await Profiles.create({
+            username: username,
+            fullName: fullName
         });
 
         const token = jwt.sign(
