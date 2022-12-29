@@ -4,7 +4,6 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const fs = require("fs");
 const os = require("os");
-const auth = require('../middleware/auth');
 
 const Users = require("../models/users");
 const Profiles = require("../models/profiles");
@@ -67,9 +66,10 @@ router.post("/register", async (req, res) => {
             created: Date.now().toString()
         });
 
-        const userProfile = await Profiles.create({
+        await Profiles.create({
             username: username,
-            fullName: fullName
+            fullName: fullName,
+            account: account.id
         });
 
         const token = jwt.sign(
@@ -93,43 +93,116 @@ router.post("/register", async (req, res) => {
     }
 })
 
-router.post("/login", async (req, res) => {
+router.post("/login", async (req, res, next) => {
     try {
         const { email, password } = req.body;
-        const uuid = generateUUID();
+        if (!process.env.USER_TOKEN) {
+            const uuidAccess = generateUUID();
+            setEnvValue("USER_TOKEN", uuidAccess);
+            process.env.USER_TOKEN = uuidAccess;
+        }
+        if (!process.env.REFRESH_TOKEN) {
+            const uuidRefresh = generateUUID();
+            setEnvValue("REFRESH_TOKEN", uuidRefresh);
+            process.env.REFRESH_TOKEN = uuidRefresh;
+        }
 
         const user = await Users.findOne({ email });
+        const userAccount = await Profiles.findOne({ account: user.id })
         if (user && (await bcrypt.compare(password, user.hash_password))) {
-            const token = jwt.sign(
-                { user_id: user._id, email },
-                uuid,
+            const access_token = jwt.sign(
                 {
-                    expiresIn: "1h",
+                    user_id: user._id,
+                    email: email
+                },
+                process.env.USER_TOKEN,
+                {
+                    expiresIn: "1m",
                     algorithm: "HS256"
                 }
             );
 
-            user.token = token;
-            setEnvValue("USER_TOKEN", uuid);
-            process.env.USER_TOKEN = uuid;
+            const refresh_token = jwt.sign(
+                {
+                    user_id: user._id,
+                    email: email
+                },
+                process.env.REFRESH_TOKEN,
+                {
+                    expiresIn: "1d",
+                    algorithm: "HS256"
+                }
+            );
+
+            user.token = refresh_token;
+            Users.findOneAndUpdate(
+                { email: email },
+                { $set: { token: refresh_token } },
+                { new: true }
+            ).exec(function(err, doc) {})
+
+            res.cookie('jwt', refresh_token, { httpOnly: true, sameSite: 'None', secure: true, maxAge: 24 * 60 * 60 * 1000 })
 
             res.status(200).json({
                 email: user.email,
-                token: user.token,
-                created: user.created
-            });
+                username: userAccount.username,
+                name: userAccount.fullName,
+                token: access_token
+            })
         }
         else {
             res.status(400).send("Invalid credentials");
         }
+        next();
     }
     catch (error) {
         console.log(error)
     }
 })
 
-router.get("/home", auth, (req, res) => {
-    res.status(200).send("Home page");
+router.get("/refresh", async (req, res) => {
+    const cookies = req.cookies
+    if (!cookies) return res.status(401).send("Unauthorized")
+    const refresh = cookies.jwt;
+
+    const user = await Users.findOne({ token: refresh });
+    if (!user) return res.status(403).send("Access denied !");
+
+    jwt.verify(refresh, process.env.REFRESH_TOKEN, { algorithms: ["HS256"] },
+        (err, decoded) => {
+            if (err || user.email !== decoded.email) return res.status(403).send("Access denied !");
+
+            const access_token = jwt.sign(
+                {
+                    user_id: user._id,
+                    email: user.email
+                },
+                process.env.USER_TOKEN,
+                {
+                    expiresIn: "1m",
+                    algorithm: "HS256"
+                }
+            );
+
+            res.json({ token: access_token })
+        })
+})
+
+router.get("/logout", async (req, res) => {
+    const cookies = req.cookies
+    if (!cookies.jwt) return res.sendStatus(204)
+    const refresh = cookies.jwt
+
+    const user = await Users.findOne({ refresh });
+    if (!user) {
+        res.clearCookie('jwt', { httpOnly: true, sameSite: 'None', secure: true })
+        return res.sendStatus(204)
+    }
+
+    await Users.findOneAndUpdate({ refresh }, { refresh: "" })
+
+    res.clearCookie('jwt', { httpOnly: true, sameSite: 'None', secure: true })
+    res.sendStatus(204)
 })
 
 module.exports = router;

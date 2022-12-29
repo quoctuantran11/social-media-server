@@ -1,6 +1,10 @@
 const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
+const cookieParser = require('cookie-parser');
+const auth = require('./middleware/auth');
+const corsOptions = require('./config/corsOptions')
+const credentials = require('./middleware/credentials')
 
 require('dotenv').config({override: true });
 const app = express();
@@ -14,11 +18,17 @@ mongoose.connect(process.env.APP_MONGO_DATABASE_URL,
         process.exit(1);
     }) 
 
-app.use(cors());
+app.use(credentials);
+app.use(cors(corsOptions));
+app.use(cookieParser());
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }))
 
 app.use("/", require("./routes/authRoute"));
+
+app.use(auth)
+
+// app.use(express.static(__dirname + 'client/public'));
 
 app.listen(port, function () {
     console.log(`Server running on port ${port}`);
